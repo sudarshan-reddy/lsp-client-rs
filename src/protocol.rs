@@ -1,3 +1,4 @@
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -130,7 +131,34 @@ pub struct CodeActionKind {
     pub value_set: Vec<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Location {
+    uri: String,
+    range: Range,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Range {
+    start: Position,
+    end: Position,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Position {
+    line: u32,
+    character: u32,
+}
+
 impl RequestMessage {
+    /// Helper function to create a new `initialize` request message.
+    /// id - The ID of the request message.
+    /// process_id - The process ID of the client. (usually `std::process::id()`)
+    /// root_uri - The root URI of the workspace. (e.g. `file://path/to/code`)
+    /// client_name - The name of the client. (e.g. `vim-go`)
+    /// workspace_folders - List of folders that the lsp needs context for.
+    /// TODO: This function is currently a bit opinionated towards textdefintion.
+    /// To have a custom initialize message, the workaround for now is to directly
+    /// create a `RequestMessage` with desired capabilities.
     pub fn new_initialize(
         id: u32,
         process_id: u32,
@@ -194,9 +222,36 @@ impl RequestMessage {
             .unwrap(),
         }
     }
+
+    /// Helper function to create a new `textDocument/definition` request message.
+    /// id - The ID of the request message.
+    /// uri - The URI of the text document. (e.g. `file://path/to/code/main.go`)
+    /// line - The line number of the cursor position.
+    /// character - The the cursor position of the character we want to get the definition of.
+    pub fn new_get_definition(id: u32, uri: String, position: Position) -> Self {
+        RequestMessage {
+            base_message: BaseMessage {
+                jsonrpc: "2.0".to_string(),
+            },
+            id: serde_json::Value::from(id),
+            method: "textDocument/definition".to_string(),
+            params: serde_json::json!({
+                "textDocument": {
+                    "uri": uri
+                },
+                "position": {
+                    "line": position.line,
+                    "character": position.character,
+                }
+            }),
+        }
+    }
 }
 
 impl NotificationMessage {
+    /// Helper function to create a new `initialized` notification message.
+    /// This message is sent by the client to the server once it has finished initializing
+    /// and signals that the client is ready to receive requests.
     pub fn new_initialized() -> Self {
         NotificationMessage {
             base_message: BaseMessage {
@@ -204,6 +259,33 @@ impl NotificationMessage {
             },
             method: "initialized".to_string(),
             params: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+}
+
+impl ResponseMessage {
+    pub fn handle_initialize(&self) -> Result<()> {
+        if self.error.is_some() {
+            bail!("Error from LSP server: {:?}", self.error);
+        };
+
+        Ok(())
+    }
+
+    pub fn handle_definition(&self) -> Result<Vec<Location>> {
+        if self.error.is_some() {
+            bail!("Error from LSP server: {:?}", self.error);
+        };
+
+        let location: Result<Location, _> = serde_json::from_value(self.result.clone());
+        let locations: Result<Vec<Location>, _> = serde_json::from_value(self.result.clone());
+
+        match location {
+            Ok(loc) => Ok(vec![loc]),
+            Err(_) => match locations {
+                Ok(locs) => Ok(locs),
+                Err(_) => anyhow::bail!("Failed to parse definition location(s) from response."),
+            },
         }
     }
 }
@@ -291,5 +373,35 @@ mod tests {
         let initialized_notification = NotificationMessage::new_initialized();
         let initialized_notification_json = serde_json::to_value(initialized_notification).unwrap();
         assert_eq!(expected_initialized_json, initialized_notification_json);
+    }
+
+    #[test]
+    fn test_get_definition() {
+        let expected_get_definition_json = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "textDocument/definition",
+            "params": {
+                "textDocument": {
+                    "uri": "file://path/to/code/main.go"
+                },
+                "position": {
+                    "line": 1,
+                    "character": 2
+                }
+            }
+        });
+
+        let get_definition = RequestMessage::new_get_definition(
+            1,
+            "file://path/to/code/main.go".to_string(),
+            Position {
+                line: 1,
+                character: 2,
+            },
+        );
+
+        let get_definition_json = serde_json::to_value(get_definition).unwrap();
+        assert_eq!(expected_get_definition_json, get_definition_json);
     }
 }
