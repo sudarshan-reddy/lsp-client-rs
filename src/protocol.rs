@@ -149,6 +149,12 @@ pub struct Position {
     character: u32,
 }
 
+impl Position {
+    pub fn new(line: u32, character: u32) -> Self {
+        Position { line, character }
+    }
+}
+
 impl RequestMessage {
     /// Helper function to create a new `initialize` request message.
     /// id - The ID of the request message.
