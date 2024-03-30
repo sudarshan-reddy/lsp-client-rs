@@ -131,7 +131,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lsp-rs"
+name = "lsp-client-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -1,9 +1,10 @@
+use crate::protocol::ResponseMessage;
 use anyhow::{anyhow, Result};
+use serde::Serialize;
+use std::fmt::Debug;
 use std::pin::Pin;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
-
-use crate::protocol::{RequestMessage, ResponseMessage};
 
 pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Unpin + ?Sized> AsyncReadWrite for T {}
@@ -50,7 +51,8 @@ impl LspClient {
         Ok(Self { stream })
     }
 
-    pub async fn send_request(&mut self, request: RequestMessage) -> Result<()> {
+    pub async fn send_request<T: Serialize + Debug>(&mut self, request: T) -> Result<()> {
+        println!("Sending request: {:?}", request);
         let request_str = serde_json::to_string(&request)?;
         let content_length = request_str.len();
         let header = format!("Content-Length: {}\r\n\r\n{}", content_length, request_str);
@@ -60,48 +62,52 @@ impl LspClient {
     }
 
     pub async fn handle_response(&mut self) -> Result<ResponseMessage> {
-        let mut headers = Vec::new();
-        let mut content_length: Option<usize> = None;
-
-        // Read headers
         loop {
-            let mut byte = [0];
-            self.stream.read_exact(&mut byte).await?;
-            headers.push(byte[0]);
+            let mut headers = Vec::new();
+            let mut content_length: Option<usize> = None;
 
-            // Check if we've reached the end of the headers (double CRLF)
-            if headers.ends_with(b"\r\n\r\n") {
-                let headers_str = String::from_utf8_lossy(&headers);
-                for line in headers_str.lines() {
-                    if line.starts_with("Content-Length:") {
-                        let parts: Vec<&str> = line.splitn(2, ':').collect();
-                        if parts.len() > 1 {
-                            let length_str = parts[1].trim();
-                            content_length = Some(length_str.parse()?);
-                            break;
+            // Read headers
+            loop {
+                let mut byte = [0];
+                self.stream.read_exact(&mut byte).await?;
+                headers.push(byte[0]);
+
+                if headers.ends_with(b"\r\n\r\n") {
+                    let headers_str = String::from_utf8_lossy(&headers);
+                    for line in headers_str.lines() {
+                        if line.starts_with("Content-Length:") {
+                            let parts: Vec<&str> = line.splitn(2, ':').collect();
+                            if parts.len() > 1 {
+                                let length_str = parts[1].trim();
+                                content_length = Some(length_str.parse()?);
+                                break;
+                            }
                         }
                     }
+                    break; // Exit headers reading loop
                 }
-                break;
+            }
+
+            let content_length =
+                content_length.ok_or_else(|| anyhow!("Failed to find Content-Length header"))?;
+            let mut body = vec![0u8; content_length];
+            self.stream.read_exact(&mut body).await?;
+            println!("Response body: {:?}", String::from_utf8_lossy(&body));
+            let response: ResponseMessage = serde_json::from_slice(&body)
+                .map_err(|e| anyhow!("Failed to parse response body: {}", e))?;
+
+            // If response has a valid id, return it
+            if response.id.is_some() {
+                return Ok(response);
             }
         }
-
-        let content_length =
-            content_length.ok_or_else(|| anyhow!("Failed to find Content-Length header"))?;
-
-        let mut body = vec![0u8; content_length];
-        self.stream.read_exact(&mut body).await?;
-
-        let response: ResponseMessage = serde_json::from_slice(&body)
-            .map_err(|e| anyhow!("Failed to parse response body: {}", e))?;
-
-        Ok(response)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::RequestMessage;
     use serde_json::json;
     use tokio_test::io::Builder;
 
@@ -155,8 +161,7 @@ mod tests {
 
         // Test handling the response
         let response = lsp_client.handle_response().await;
-        println!("{:?}", response);
         assert!(response.is_ok());
-        assert_eq!(response.unwrap().result, json!({}));
+        assert_eq!(response.unwrap().result.unwrap(), json!({}));
     }
 }

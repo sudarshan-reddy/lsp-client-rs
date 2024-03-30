@@ -11,6 +11,7 @@ pub struct RequestMessage {
     #[serde(flatten)]
     pub base_message: BaseMessage,
     pub id: serde_json::Value,
+    pub notification: u8,
     pub method: String,
     pub params: serde_json::Value,
 }
@@ -19,8 +20,8 @@ pub struct RequestMessage {
 pub struct ResponseMessage {
     #[serde(flatten)]
     pub base_message: BaseMessage,
-    pub id: serde_json::Value,
-    pub result: serde_json::Value,
+    pub id: Option<serde_json::Value>,
+    pub result: Option<serde_json::Value>,
     pub error: Option<serde_json::Value>,
 }
 
@@ -218,6 +219,7 @@ impl RequestMessage {
             },
             id: serde_json::Value::from(id),
             method: "initialize".to_string(),
+            notification: 0,
             params: serde_json::to_value(InitializeParams {
                 process_id,
                 root_uri,
@@ -241,6 +243,7 @@ impl RequestMessage {
             },
             id: serde_json::Value::from(id),
             method: "textDocument/definition".to_string(),
+            notification: 0,
             params: serde_json::json!({
                 "textDocument": {
                     "uri": uri
@@ -283,15 +286,24 @@ impl ResponseMessage {
             bail!("Error from LSP server: {:?}", self.error);
         };
 
-        let location: Result<Location, _> = serde_json::from_value(self.result.clone());
-        let locations: Result<Vec<Location>, _> = serde_json::from_value(self.result.clone());
+        if let Some(res) = &self.result {
+            if res.is_null() {
+                bail!("No definition found.");
+            }
+            let location: Result<Location, _> = serde_json::from_value(res.clone());
+            let locations: Result<Vec<Location>, _> = serde_json::from_value(res.clone());
 
-        match location {
-            Ok(loc) => Ok(vec![loc]),
-            Err(_) => match locations {
-                Ok(locs) => Ok(locs),
-                Err(_) => anyhow::bail!("Failed to parse definition location(s) from response."),
-            },
+            match location {
+                Ok(loc) => Ok(vec![loc]),
+                Err(_) => match locations {
+                    Ok(locs) => Ok(locs),
+                    Err(_) => {
+                        anyhow::bail!("Failed to parse definition location(s) from response.")
+                    }
+                },
+            }
+        } else {
+            bail!("No definition found.");
         }
     }
 }
@@ -307,6 +319,7 @@ mod tests {
         let expected_init_json = json!({
             "jsonrpc": "2.0",
             "id": 1,
+            "notification": 0,
             "method": "initialize",
             "params": {
                 "processId": process_id,
@@ -386,6 +399,7 @@ mod tests {
         let expected_get_definition_json = json!({
             "jsonrpc": "2.0",
             "id": 1,
+            "notification": 0,
             "method": "textDocument/definition",
             "params": {
                 "textDocument": {
